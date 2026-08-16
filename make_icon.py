@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import struct
+import sys
 from pathlib import Path
 
 ICON_SIZES = (16, 24, 32, 48, 64, 128, 256)
@@ -155,7 +156,27 @@ def write_ico_file(destination: Path, sizes: tuple[int, ...] = ICON_SIZES) -> No
     destination.write_bytes(file_header + bytes(directory_entries) + bytes(image_payloads))
 
 
+def allow_non_ascii_output() -> None:
+    """让中文提示在非 UTF-8 控制台上也不会让脚本崩掉。
+
+    英文版 Windows（以及 GitHub Actions 的 Windows runner）默认用 cp1252，
+    直接 print 中文会抛 UnicodeEncodeError，导致构建在「生成图标」这步失败。
+
+    这里不复用 portkit.py 里的同类函数，是为了让本脚本保持独立可运行——
+    生成图标不应该依赖端口工具模块。
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            try:
+                stream.reconfigure(errors="replace")
+            except (AttributeError, ValueError):
+                pass
+
+
 def main() -> int:
+    allow_non_ascii_output()
     destination = Path(__file__).with_name("app_icon.ico")
     write_ico_file(destination)
     print(f"已生成图标: {destination}  ({destination.stat().st_size} 字节, 尺寸 {ICON_SIZES})")

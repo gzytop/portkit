@@ -12,9 +12,22 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
 
 TEMPLATE_PATH = Path(__file__).resolve().parent.parent / "release_notes_template.md"
+
+
+def allow_non_ascii_output() -> None:
+    """CI 的 Windows runner 控制台是 cp1252，打印中文会抛 UnicodeEncodeError。"""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            try:
+                stream.reconfigure(errors="replace")
+            except (AttributeError, ValueError):
+                pass
 
 
 def render_release_notes(sha256: str, repository: str) -> str:
@@ -30,6 +43,7 @@ def render_release_notes(sha256: str, repository: str) -> str:
 
 
 def main() -> int:
+    allow_non_ascii_output()
     parser = argparse.ArgumentParser(description="渲染 Release 说明")
     parser.add_argument("--sha256", required=True, help="产物的 SHA256 校验值")
     parser.add_argument("--repository", required=True, help="仓库全名，如 owner/name")

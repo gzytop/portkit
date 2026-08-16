@@ -296,6 +296,43 @@ class CommandLineInterfaceTests(unittest.TestCase):
         self.assertNotEqual(self._run_cli("check", "99999", "--no-color").returncode, 0)
 
 
+class NonUtf8ConsoleTests(unittest.TestCase):
+    """回归测试：中文输出不能在非 UTF-8 控制台上把脚本搞崩。
+
+    英文版 Windows 与 GitHub Actions 的 Windows runner 默认是 cp1252，
+    曾经导致 `make_icon.py` 直接抛 UnicodeEncodeError，让构建失败在生成图标这步。
+    这里通过 PYTHONIOENCODING 复现该环境。
+    """
+
+    def _run_with_console_encoding(self, *arguments: str) -> subprocess.CompletedProcess:
+        constrained_environment = dict(os.environ)
+        constrained_environment["PYTHONIOENCODING"] = "cp1252"
+        return subprocess.run(
+            [sys.executable, *arguments],
+            capture_output=True,
+            timeout=120,
+            cwd=str(PROJECT_ROOT),
+            env=constrained_environment,
+        )
+
+    def test_icon_generation_survives_cp1252_console(self):
+        completed = self._run_with_console_encoding("make_icon.py")
+        self.assertEqual(
+            completed.returncode,
+            0,
+            f"make_icon.py 在 cp1252 控制台下失败：{completed.stderr.decode('utf-8', 'replace')}",
+        )
+
+    def test_cli_survives_cp1252_console(self):
+        free_port = reserve_free_port()
+        completed = self._run_with_console_encoding("portkit.py", "check", str(free_port), "--no-color")
+        self.assertEqual(
+            completed.returncode,
+            0,
+            f"portkit.py 在 cp1252 控制台下失败：{completed.stderr.decode('utf-8', 'replace')}",
+        )
+
+
 def graphical_display_is_available() -> bool:
     """判断当前环境能否创建窗口（CI 的 Linux 需要 xvfb 才行）。"""
     try:

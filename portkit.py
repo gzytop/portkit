@@ -831,12 +831,19 @@ def parse_port_argument(value: str) -> int:
 
 
 def configure_stdout_encoding() -> None:
-    """避免在 GBK 控制台打印生僻字符（如 emoji 进程名）时直接崩溃。"""
+    """让中文输出在非 UTF-8 控制台（如英文版 Windows 的 cp1252）也不崩。
+
+    优先切到 UTF-8 以保留中文；不支持时退回 errors="replace"，
+    宁可显示成问号也不要因为 UnicodeEncodeError 直接终止。
+    """
     for stream in (sys.stdout, sys.stderr):
         try:
-            stream.reconfigure(errors="replace")
+            stream.reconfigure(encoding="utf-8", errors="replace")
         except (AttributeError, ValueError):
-            pass
+            try:
+                stream.reconfigure(errors="replace")
+            except (AttributeError, ValueError):
+                pass
 
 
 def build_argument_parser() -> argparse.ArgumentParser:
