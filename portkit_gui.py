@@ -537,8 +537,15 @@ class PortManagerApplication:
                     self.is_closing = True
 
     def handle_window_close(self) -> None:
-        """关闭窗口前取消所有已排程回调，避免访问已销毁的控件。"""
+        """关闭窗口前取消所有已排程回调，避免访问已销毁的控件。
+
+        做成幂等的：快速连点关闭按钮、或程序内部已经关过一次时，
+        重复调用不应该因为操作已销毁的控件而抛异常。
+        """
+        if self.is_closing:
+            return
         self.is_closing = True
+
         for scheduled_id in (self.scheduled_auto_refresh_id, self.scheduled_poll_id):
             if scheduled_id is not None:
                 try:
@@ -547,7 +554,11 @@ class PortManagerApplication:
                     pass
         self.scheduled_auto_refresh_id = None
         self.scheduled_poll_id = None
-        self.root.destroy()
+
+        try:
+            self.root.destroy()
+        except tk.TclError:
+            pass
 
     def _reschedule_auto_refresh(self) -> None:
         if self.scheduled_auto_refresh_id is not None:

@@ -1,0 +1,103 @@
+# 每次推送和 PR 都在三个平台上跑冒烟测试。
+#
+# 为什么要跨平台跑：portkit 在 Windows 上走 netstat/tasklist，在 macOS/Linux 上走
+# lsof/ss + 信号。只在本地（Windows）测的话，POSIX 那条分支等于从未被验证过。
+name: CI
+
+on:
+  push:
+    branches: [main]
+    paths-ignore: ['**.md', 'docs/**']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# 只读权限即可，CI 不需要写仓库。
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: ${{ matrix.os }} / Python ${{ matrix.python-version }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+
+    strategy:
+      # 一个平台失败时仍然跑完其他平台，便于一次看清是普遍问题还是平台特有问题。
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            python-version: '3.12'
+          - os: ubuntu-latest
+            python-version: '3.12'
+          - os: macos-latest
+            python-version: '3.12'
+          # README 声明支持 3.9 起，用最低版本兜一遍语法与 API 兼容性。
+          - os: ubuntu-latest
+            python-version: '3.9'
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: 确认没有第三方依赖
+        shell: bash
+        run: |
+          # 项目承诺零第三方依赖，这里守住这条底线：
+          # 出现 requirements.txt / pyproject 依赖时应显式评审，而不是悄悄引入。
+          if [ -f requirements.txt ] || [ -f pyproject.toml ]; then
+            echo "::error::检测到依赖声明文件，与「零第三方依赖」的项目约定冲突"
+            exit 1
+          fi
+          python -c "import sys; print('Python', sys.version)"
+
+      - name: 语法检查
+        run: python -m compileall -q portkit.py portkit_gui.py make_icon.py tests
+
+      - name: 安装 Linux 端口工具与虚拟显示
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          # iproute2 提供 ss（枚举端口的备选路径）；xvfb 提供无头图形显示以便测 GUI。
+          sudo apt-get install -y -qq iproute2 xvfb
+          # 故意不安装 lsof，让 CI 真实覆盖「没有 lsof 时退回 ss」的分支。
+          echo "lsof 是否存在: $(command -v lsof || echo '不存在（将使用 ss）')"
+          echo "ss 是否存在: $(command -v ss || echo '不存在')"
+
+      - name: 冒烟测试（Linux，带虚拟显示）
+        if: runner.os == 'Linux'
+        run: xvfb-run --auto-servernum python tests/smoke_test.py
+
+      - name: 冒烟测试（Windows / macOS）
+        if: runner.os != 'Linux'
+        run: python tests/smoke_test.py
+
+      - name: 图标生成可用
+        # 打包依赖这一步产出 app_icon.ico，先确认它在各平台都能跑。
+        run: python make_icon.py
+
+      - name: 确认打包配置未失效
+        # 不在 CI 的每个平台上真打包（耗时且只有 Windows 有意义），
+        # 但至少保证 spec 引用的文件都还在，避免改名后到发版才发现。
+        shell: bash
+        run: |
+          python - <<'PYTHON'
+          from pathlib import Path
+
+          spec_text = Path("portkit.spec").read_text(encoding="utf-8")
+          required_files = ["portkit_gui.py", "app_icon.ico", "version_info.txt"]
+          missing = [name for name in required_files if name in spec_text and not Path(name).exists()]
+          if missing:
+              raise SystemExit(f"打包配置引用了不存在的文件: {missing}")
+          print("打包配置引用的文件都存在")
+          PYTHON

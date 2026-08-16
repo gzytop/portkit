@@ -1,0 +1,118 @@
+# 打 tag（如 v1.1.0）时自动构建 Windows exe 并发布 Release。
+# 也支持手动触发，此时只产出构建物、不创建 Release，便于验证流水线本身。
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+# 创建 Release 需要写 contents 的权限。
+permissions:
+  contents: write
+
+jobs:
+  build-windows-executable:
+    name: 构建并发布 Windows exe
+    runs-on: windows-latest
+    timeout-minutes: 25
+
+    env:
+      OUTPUT_EXE: dist/PortKit.exe
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: 安装 PyInstaller
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pyinstaller
+
+      - name: 发布前先跑测试
+        # 宁可流水线失败，也不要把一个坏版本发出去让别人下载。
+        run: python tests/smoke_test.py
+
+      - name: 生成图标
+        run: python make_icon.py
+
+      - name: 打包单文件 exe
+        run: pyinstaller portkit.spec --noconfirm --clean --log-level WARN
+
+      - name: 校验产物存在且大小合理
+        shell: pwsh
+        run: |
+          if (-not (Test-Path $env:OUTPUT_EXE)) {
+            Write-Error "未找到预期产物 $env:OUTPUT_EXE"
+            exit 1
+          }
+          $sizeMB = [math]::Round((Get-Item $env:OUTPUT_EXE).Length / 1MB, 2)
+          Write-Host "产物大小: $sizeMB MB"
+          # 单文件里含 Python 运行时和 tkinter，正常在 10 MB 上下。
+          # 明显偏小通常意味着漏打了依赖，偏大意味着 excludes 失效。
+          if ($sizeMB -lt 5 -or $sizeMB -gt 40) {
+            Write-Error "产物大小异常（$sizeMB MB），可能漏打依赖或误包含多余模块"
+            exit 1
+          }
+
+      - name: 冒烟测试 exe 能真正启动
+        shell: pwsh
+        run: |
+          # PyInstaller 常见的坑是「构建成功但一运行就因缺模块退出」，
+          # 所以这里真的把它启动起来，确认窗口进程活着才算通过。
+          Start-Process -FilePath $env:OUTPUT_EXE | Out-Null
+          Start-Sleep -Seconds 15
+
+          $windowProcess = Get-Process -Name PortKit -ErrorAction SilentlyContinue |
+            Where-Object { $_.MainWindowHandle -ne 0 } |
+            Select-Object -First 1
+
+          if ($null -eq $windowProcess) {
+            Write-Host "当前 PortKit 进程列表："
+            Get-Process -Name PortKit -ErrorAction SilentlyContinue | Format-Table Id, ProcessName
+            Write-Error "exe 启动后没有创建窗口，可能运行时崩溃"
+            exit 1
+          }
+          Write-Host "exe 启动正常，窗口标题: $($windowProcess.MainWindowTitle)"
+
+          Get-Process -Name PortKit -ErrorAction SilentlyContinue | Stop-Process -Force
+          Write-Host "冒烟测试通过"
+
+      - name: 计算 SHA256
+        id: checksum
+        shell: pwsh
+        run: |
+          $hash = (Get-FileHash $env:OUTPUT_EXE -Algorithm SHA256).Hash
+          "sha256=$hash" >> $env:GITHUB_OUTPUT
+          Write-Host "SHA256: $hash"
+
+      - name: 上传构建物
+        # 手动触发时没有 Release 可挂，构建物留在这里供下载验证。
+        uses: actions/upload-artifact@v4
+        with:
+          name: PortKit-exe
+          path: ${{ env.OUTPUT_EXE }}
+          retention-days: 30
+
+      - name: 生成 Release 说明
+        if: startsWith(github.ref, 'refs/tags/')
+        run: >
+          python .github/scripts/render_release_notes.py
+          --sha256 "${{ steps.checksum.outputs.sha256 }}"
+          --repository "${{ github.repository }}"
+          --output release_notes.md
+
+      - name: 创建 Release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: >
+          gh release create ${{ github.ref_name }}
+          "${{ env.OUTPUT_EXE }}"
+          --title "${{ github.ref_name }} — 端口占用管理器"
+          --notes-file release_notes.md
