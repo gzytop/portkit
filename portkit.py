@@ -457,13 +457,61 @@ def is_process_running(pid: int) -> bool:
             ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"]
         )
         return exit_code == 0 and f'"{pid}"' in output
+    return _is_posix_process_alive(pid)
+
+
+def _is_posix_process_alive(pid: int) -> bool:
+    """判断 POSIX 进程是否真的还在运行。
+
+    不能只靠 `os.kill(pid, 0)`：进程被终止后会变成僵尸（zombie），
+    也就是「已经退出、但父进程还没回收」的进程表条目，此时 kill(pid, 0)
+    依然成功。若把僵尸当成存活，终止操作会一直等到超时并误报「进程仍在运行」，
+    让用户以为没杀掉。
+    """
+    _reap_if_own_child(pid)
+
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
         return False
     except PermissionError:
+        # 属于其他用户，只能确认它存在；这种进程不会是本进程要回收的僵尸。
         return True
-    return True
+
+    return not _is_zombie_process(pid)
+
+
+def _reap_if_own_child(pid: int) -> None:
+    """若 pid 是本进程的子进程，顺手回收，避免留下僵尸条目。
+
+    对不是自己子进程的 pid，waitpid 会抛 ChildProcessError，忽略即可。
+    """
+    try:
+        os.waitpid(pid, os.WNOHANG)
+    except (ChildProcessError, OSError):
+        pass
+
+
+def _is_zombie_process(pid: int) -> bool:
+    """检测进程是否处于僵尸状态。"""
+    linux_stat_path = f"/proc/{pid}/stat"
+    if os.path.exists(linux_stat_path):
+        try:
+            with open(linux_stat_path, "r", encoding="utf-8", errors="replace") as stat_file:
+                stat_content = stat_file.read()
+        except OSError:
+            return False
+        # 格式为 `pid (进程名) 状态 ...`，而进程名自身可能含空格和括号，
+        # 因此从最后一个 ')' 之后开始取状态字段。
+        _, _, fields_after_name = stat_content.rpartition(")")
+        state_fields = fields_after_name.split()
+        return bool(state_fields) and state_fields[0] == "Z"
+
+    # macOS 等没有 /proc 的系统退回 ps 查询进程状态。
+    exit_code, output = run_system_command(["ps", "-o", "state=", "-p", str(pid)])
+    if exit_code != 0:
+        return False
+    return output.strip().upper().startswith("Z")
 
 
 def terminate_process(pid: int, force: bool = False, include_children: bool = False) -> tuple[bool, str]:

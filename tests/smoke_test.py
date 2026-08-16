@@ -225,6 +225,21 @@ class ProcessTerminationTests(unittest.TestCase):
             "端口在进程退出后仍显示被占用",
         )
 
+    def test_terminating_own_child_is_not_reported_as_still_running(self):
+        """回归测试：POSIX 上进程被杀后会先变成僵尸（已退出但未被父进程回收）。
+
+        僵尸对 `os.kill(pid, 0)` 依然响应成功，若把它当作存活，终止操作会
+        等到超时并误报「进程仍在运行」，让用户以为没杀掉。
+
+        这里刻意不调用 `Popen.poll()` —— 它会顺带回收僵尸，从而掩盖问题。
+        """
+        succeeded, detail = portkit.terminate_process(self.server_process.pid, force=True)
+        self.assertTrue(succeeded, f"终止自己的子进程时被误报为失败：{detail}")
+        self.assertFalse(
+            portkit.is_process_running(self.server_process.pid),
+            "进程已退出，但仍被判定为运行中（僵尸状态未被正确识别）",
+        )
+
     def test_is_process_running_reflects_reality(self):
         self.assertTrue(portkit.is_process_running(self.server_process.pid))
         portkit.terminate_process(self.server_process.pid, force=True)
