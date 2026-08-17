@@ -89,15 +89,4 @@ jobs:
       - name: 确认打包配置未失效
         # 不在 CI 的每个平台上真打包（耗时且只有 Windows 有意义），
         # 但至少保证 spec 引用的文件都还在，避免改名后到发版才发现。
-        shell: bash
-        run: |
-          python - <<'PYTHON'
-          from pathlib import Path
-
-          spec_text = Path("portkit.spec").read_text(encoding="utf-8")
-          required_files = ["portkit_gui.py", "app_icon.ico", "version_info.txt"]
-          missing = [name for name in required_files if name in spec_text and not Path(name).exists()]
-          if missing:
-              raise SystemExit(f"打包配置引用了不存在的文件: {missing}")
-          print("打包配置引用的文件都存在")
-          PYTHON
+        run: python .github/scripts/check_packaging_config.py
