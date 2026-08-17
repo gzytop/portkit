@@ -4,6 +4,12 @@
 
 ![界面截图](docs/screenshot.png)
 
+<details>
+<summary>暗色主题（界面内一键切换）</summary>
+
+![暗色主题](docs/screenshot-dark.png)
+</details>
+
 <p align="center">
   <a href="https://github.com/gzytop/portkit/actions/workflows/ci.yml"><img src="https://github.com/gzytop/portkit/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <img src="https://img.shields.io/badge/Python-3.9%2B-3776AB?logo=python&logoColor=white" alt="Python 3.9+">
@@ -113,6 +119,7 @@ Windows 下也可以双击 `port-gui.bat`（不会弹出黑色控制台窗口）
 | **隐藏系统进程** | 默认勾选，把 `svchost.exe`、`System` 等噪音收起来（它们通常占了列表的一大半） |
 | **只看开发端口** | 只显示 3000 / 5173 / 8080 / 3306 / 6379 等常用开发端口 |
 | **自动刷新** | 可选 2 / 5 / 10 / 30 秒。适合「等某个端口释放」的场景，盯着它自己变 |
+| **亮色 / 暗色** | 右侧按钮一键切换主题，按钮文案指向切换后的结果 |
 | **状态栏**（底部） | 显示「可终止」「系统保护」「内核残留」各有多少条，一眼知道哪些是真能处理的 |
 
 ### 表格操作
@@ -122,13 +129,15 @@ Windows 下也可以双击 `port-gui.bat`（不会弹出黑色控制台窗口）
 - **双击某行** — 查看该进程的**完整命令行**，用来判断「这个 node 到底是我哪个项目」
 - **右键菜单** — 终止选中进程 / 强制终止（跳过系统保护）/ 查看详情 / 复制这一行
 
-### 行的颜色含义
+### 怎么读这张表
 
-| 显示 | 含义 |
-|---|---|
-| 普通黑字 | 正常进程，可以放心终止 |
-| 橙色底 + `[系统]` | 系统关键进程，**默认拒绝终止**。真要杀得用右键「强制终止」 |
-| 灰字「内核残留连接」 | `TIME_WAIT` 等待关闭的连接，没有进程可杀，等几十秒自动消失 |
+「处置」列直接用文字说明这一行能不能动，颜色只是辅助 —— 色觉障碍用户同样能分辨：
+
+| 处置 | 行的样式 | 含义 |
+|---|---|---|
+| 可终止 | 常规 / 淡蓝底加粗 | 普通进程，可以放心终止。**淡蓝底加粗的是常用开发端口**，不用筛选就能一眼扫到 |
+| 系统保护 | 琥珀色 | 系统关键进程，**默认拒绝终止**。确实要杀得用右键「强制终止」 |
+| 内核残留 | 灰色 | `TIME_WAIT` 等待关闭的连接，没有进程可杀，等几十秒自动消失 |
 
 ### 快捷键
 
@@ -321,22 +330,47 @@ GUI 里所有耗时操作（`netstat`、`taskkill`）都在后台线程执行，
 portkit/
 ├── portkit.py          # 核心逻辑 + 命令行入口（采集 / 过滤 / 终止都在这）
 ├── portkit_gui.py      # tkinter 图形界面，直接复用 portkit.py 的函数
+├── theme.py            # 设计令牌：OKLCH 色板推导、字号阶梯、间距标尺
 ├── port.bat            # Windows 命令行快捷入口
 ├── port-gui.bat        # Windows 图形界面快捷入口（无控制台窗口）
 ├── build_exe.bat       # 一键打包出 dist\PortKit.exe
 ├── portkit.spec        # PyInstaller 打包配置
 ├── make_icon.py        # 生成图标（手写 ICO 字节，不需要 Pillow）
 ├── version_info.txt    # exe 的 Windows 版本信息
+├── .impeccable.md      # 设计上下文与设计原则
 ├── tests/
 │   └── smoke_test.py   # 冒烟测试（标准库 unittest，本地与 CI 共用）
 ├── .github/
 │   ├── workflows/      # CI 与自动发版流水线
 │   └── scripts/        # 流水线用到的辅助脚本
 └── docs/
-    └── screenshot.png
+    ├── screenshot.png
+    └── screenshot-dark.png
 ```
 
 GUI 是对 `portkit.py` 的一层封装，不重复实现任何逻辑，所以两种用法的行为和安全策略天然一致。
+
+## 设计说明
+
+界面的设计取向记录在 [`.impeccable.md`](.impeccable.md)，核心是三条：
+
+**颜色只编码状态，不做装饰。** 每种着色都对应一个用户需要区分的语义 —— 可终止 / 系统受保护 / 内核残留 / 常用开发端口。看不出含义的颜色一律去掉。
+
+**破坏性操作要有视觉分量。** 按钮按危险程度分三级：终止（实心红）> 刷新（实心蓝）> 详情与复制（描边）。早期版本里「刷新」和「终止」都是实心高饱和色，对一个不可撤销的操作来说过于危险。
+
+**零依赖不是简陋的借口。** tkinter 没有 CSS，但 `theme.py` 自己实现了 OKLCH → sRGB 转换，用「亮度 / 彩度 / 色相」三个可解释维度描述颜色：
+
+- 中性灰统一朝品牌色相偏移极少量彩度（tinted neutrals），整体更协调，又不会明显看出色偏
+- 明暗两套主题共用同一份语义定义，只改亮度锚点，不需要两边各写一遍魔法值
+- **对比度可以直接算出来并断言**，而不是靠肉眼判断
+
+最后一点落成了测试：`tests/smoke_test.py` 会遍历两套主题上**界面真实出现的每一个前景/背景组合**（包括斑马纹行、系统进程行、开发端口行这些容易被忽略的位置），断言全部达到 WCAG AA 的 4.5:1。想看当前数值：
+
+```bash
+python theme.py
+```
+
+无障碍方面：状态不只靠颜色区分 —— 表格有独立的「处置」列用文字说明能不能终止，色觉障碍用户同样可用。
 
 ## 参与开发
 

@@ -19,6 +19,11 @@ SPEC_PATH = PROJECT_ROOT / "portkit.spec"
 # spec 里通过文件名引用的资源；只检查确实被引用到的，避免误报。
 REFERENCED_FILE_NAMES = ("portkit_gui.py", "app_icon.ico", "version_info.txt")
 
+# PyInstaller 靠跟踪 import 链收集这些模块，spec 里不会出现它们的文件名。
+# 但少了任何一个，打出来的 exe 都会在启动时因 ModuleNotFoundError 直接退出，
+# 所以这里单独把入口模块的依赖列出来守住。
+REQUIRED_IMPORT_MODULES = ("portkit.py", "theme.py")
+
 
 def configure_output_encoding() -> None:
     """CI 的 Windows runner 控制台是 cp1252，中文输出会抛 UnicodeEncodeError。"""
@@ -41,6 +46,14 @@ def find_missing_referenced_files() -> list[str]:
     ]
 
 
+def find_missing_import_modules() -> list[str]:
+    return [
+        module_name
+        for module_name in REQUIRED_IMPORT_MODULES
+        if not (PROJECT_ROOT / module_name).exists()
+    ]
+
+
 def main() -> int:
     configure_output_encoding()
 
@@ -53,7 +66,12 @@ def main() -> int:
         print(f"打包配置引用了不存在的文件: {', '.join(missing_files)}", file=sys.stderr)
         return 1
 
-    print("打包配置引用的文件都存在")
+    missing_modules = find_missing_import_modules()
+    if missing_modules:
+        print(f"入口模块依赖的文件不存在: {', '.join(missing_modules)}", file=sys.stderr)
+        return 1
+
+    print("打包配置引用的文件与入口依赖模块都存在")
     return 0
 
 

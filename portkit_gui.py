@@ -35,6 +35,21 @@ from portkit import (
     terminate_process,
     wait_until_port_released,
 )
+from theme import (
+    DARK_PALETTE,
+    FONT_SIZE_CAPTION,
+    FONT_SIZE_BODY,
+    FONT_SIZE_TABLE,
+    FONT_SIZE_TITLE,
+    LIGHT_PALETTE,
+    SPACE_LG,
+    SPACE_MD,
+    SPACE_SM,
+    SPACE_XL,
+    SPACE_XS,
+    TABLE_ROW_HEIGHT,
+    Palette,
+)
 
 WINDOW_TITLE = "portkit — 端口占用管理"
 PROTOCOL_FILTER_ALL = "全部"
@@ -43,27 +58,39 @@ AUTO_REFRESH_INTERVAL_CHOICES = {"2 秒": 2000, "5 秒": 5000, "10 秒": 10000, 
 DEFAULT_AUTO_REFRESH_LABEL = "5 秒"
 BACKGROUND_POLL_INTERVAL_MS = 100
 
-COLOR_WINDOW_BACKGROUND = "#f4f5f7"
-COLOR_SURFACE = "#ffffff"
-COLOR_TEXT_PRIMARY = "#1f2328"
-COLOR_TEXT_MUTED = "#6b7280"
-COLOR_ACCENT = "#2563eb"
-COLOR_ACCENT_ACTIVE = "#1d4ed8"
-COLOR_DANGER = "#dc2626"
-COLOR_DANGER_ACTIVE = "#b91c1c"
-COLOR_SYSTEM_ROW_BACKGROUND = "#fff7ed"
-COLOR_SYSTEM_ROW_TEXT = "#b45309"
-COLOR_KERNEL_ROW_TEXT = "#9ca3af"
-COLOR_STRIPE_BACKGROUND = "#f1f3f5"
-
+# 表格列。新增「处置」列，把「这一行能不能杀」从颜色升级为可读文字——
+# 颜色只做辅助，色觉障碍用户同样要能分辨（见 .impeccable.md 的无障碍约定）。
+# 列序按用户的判断顺序排：先看端口，再看谁占着，然后判断能不能动它。
 TABLE_COLUMNS = (
-    ("port", "端口", 80, "center"),
-    ("protocol", "协议", 70, "center"),
-    ("state", "状态", 110, "center"),
-    ("pid", "PID", 80, "center"),
-    ("process", "进程", 240, "w"),
-    ("address", "监听地址", 160, "w"),
+    ("port", "端口", 78, "e"),
+    ("protocol", "协议", 62, "center"),
+    ("state", "连接状态", 100, "center"),
+    ("pid", "PID", 72, "e"),
+    ("process", "进程", 210, "w"),
+    ("disposition", "处置", 88, "center"),
+    ("address", "监听地址", 138, "w"),
 )
+
+# 每一行的语义分类。决定处置列文案、行底色与是否可终止，
+# 集中在一处定义，避免渲染逻辑与终止逻辑对「能不能杀」判断不一致。
+DISPOSITION_KILLABLE = "killable"
+DISPOSITION_PROTECTED = "protected"
+DISPOSITION_KERNEL = "kernel"
+
+DISPOSITION_LABELS = {
+    DISPOSITION_KILLABLE: "可终止",
+    DISPOSITION_PROTECTED: "系统保护",
+    DISPOSITION_KERNEL: "内核残留",
+}
+
+
+def classify_binding(binding: PortBinding) -> str:
+    """判断一条记录属于哪种处置类别。"""
+    if binding.pid <= 0:
+        return DISPOSITION_KERNEL
+    if binding.is_protected:
+        return DISPOSITION_PROTECTED
+    return DISPOSITION_KILLABLE
 
 
 @dataclass
@@ -166,7 +193,7 @@ class PortManagerApplication:
     避免 netstat/taskkill 的等待把界面卡住。
     """
 
-    def __init__(self, root: tk.Tk) -> None:
+    def __init__(self, root: tk.Tk, palette: Palette | None = None) -> None:
         self.root = root
         self.background_result_queue: queue.Queue[tuple[str, object]] = queue.Queue()
 
@@ -179,6 +206,10 @@ class PortManagerApplication:
         self.scheduled_auto_refresh_id: str | None = None
         self.scheduled_poll_id: str | None = None
 
+        # 主题相关状态。原生 tk 控件不受 ttk 样式管理，必须登记后逐个重着色。
+        self.palette = palette or LIGHT_PALETTE
+        self.native_checkbuttons: list[tk.Checkbutton] = []
+
         self.search_keyword = tk.StringVar()
         self.protocol_filter = tk.StringVar(value=PROTOCOL_FILTER_ALL)
         self.show_listening_only = tk.BooleanVar(value=True)
@@ -189,6 +220,7 @@ class PortManagerApplication:
         self.quick_release_port = tk.StringVar()
         self.status_message = tk.StringVar(value="正在读取端口占用…")
 
+        self._resolve_fonts()
         self._configure_window()
         self._configure_styles()
         self._build_toolbar()
@@ -203,14 +235,53 @@ class PortManagerApplication:
         self.request_refresh()
 
     # ------------------------------------------------------------------
+    # 主题
+    # ------------------------------------------------------------------
+    def toggle_theme(self) -> None:
+        """在亮色与暗色之间切换。"""
+        self.apply_palette(DARK_PALETTE if not self.palette.is_dark else LIGHT_PALETTE)
+
+    def apply_palette(self, palette: Palette) -> None:
+        """换用新色板并把界面上所有受影响的部分重新着色。"""
+        self.palette = palette
+        self.root.configure(background=palette.window)
+        self._configure_styles()
+
+        for checkbutton in self.native_checkbuttons:
+            self._paint_checkbutton(checkbutton)
+
+        self._paint_context_menu()
+        self._configure_table_row_tags()
+        self._update_theme_button_label()
+        # 行底色写在 tag 上，必须重画表格才会生效。
+        self._render_table()
+
+    def _update_theme_button_label(self) -> None:
+        """按钮文案指向「切换后会得到什么」，而不是当前状态，避免歧义。"""
+        if hasattr(self, "theme_button"):
+            self.theme_button.configure(text="暗色" if not self.palette.is_dark else "亮色")
+
+    def _paint_context_menu(self) -> None:
+        if not hasattr(self, "context_menu"):
+            return
+        self.context_menu.configure(
+            background=self.palette.surface,
+            foreground=self.palette.text_primary,
+            activebackground=self.palette.accent,
+            activeforeground=self.palette.accent_text,
+            font=self.ui_font,
+            borderwidth=1,
+        )
+
+    # ------------------------------------------------------------------
     # 界面搭建
     # ------------------------------------------------------------------
     def _configure_window(self) -> None:
         self.root.title(WINDOW_TITLE)
-        self.root.minsize(880, 520)
-        self.root.configure(background=COLOR_WINDOW_BACKGROUND)
+        self.root.minsize(940, 560)
+        self.root.configure(background=self.palette.window)
         apply_window_icon(self.root)
-        self._center_window(1040, 660)
+        self._center_window(1080, 700)
 
     def _center_window(self, width: int, height: int) -> None:
         screen_width = self.root.winfo_screenwidth()
@@ -226,138 +297,318 @@ class PortManagerApplication:
 
         clam 主题把「已勾选」画成一个 ✕，容易被误读成「关闭/否」，
         原生控件显示的是常规对勾，语义更清晰。
+
+        原生控件不受 ttk 样式管理，所以要登记下来，切换主题时逐个重着色。
         """
-        return tk.Checkbutton(
+        checkbutton = tk.Checkbutton(
             parent,
             text=text,
             variable=variable,
             command=command,
-            font=self.ui_font,
-            background=COLOR_WINDOW_BACKGROUND,
-            activebackground=COLOR_WINDOW_BACKGROUND,
-            foreground=COLOR_TEXT_PRIMARY,
-            activeforeground=COLOR_TEXT_PRIMARY,
-            selectcolor=COLOR_SURFACE,
             borderwidth=0,
             highlightthickness=0,
             cursor="hand2",
         )
+        self.native_checkbuttons.append(checkbutton)
+        self._paint_checkbutton(checkbutton)
+        return checkbutton
 
-    def _configure_styles(self) -> None:
+    def _paint_checkbutton(self, checkbutton: tk.Checkbutton) -> None:
+        checkbutton.configure(
+            font=self.ui_font,
+            background=self.palette.window,
+            activebackground=self.palette.window,
+            foreground=self.palette.text_primary,
+            activeforeground=self.palette.text_primary,
+            # 勾选框内部的底色。暗色主题下用最亮的中性色，
+            # 否则未勾选时方框与窗口底色几乎融为一体，看不出这里可以点。
+            selectcolor=self.palette.surface if not self.palette.is_dark else self.palette.text_secondary,
+        )
+
+    def _resolve_fonts(self) -> None:
+        """挑选字体族并按阶梯建立字号。
+
+        中文界面下把 UI 文本与表格数字分开处理：正文用系统中文字体保证字形，
+        表格用等宽字体让端口号和 PID 纵向对齐——这类数字表格对齐后扫读快得多。
+        """
         ui_font_family = pick_first_available_font(
             ["Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", "Segoe UI"], "TkDefaultFont"
         )
         monospace_font_family = pick_first_available_font(
-            ["Consolas", "Cascadia Mono", "Menlo", "DejaVu Sans Mono"], "TkFixedFont"
+            ["Cascadia Mono", "Consolas", "SF Mono", "Menlo", "DejaVu Sans Mono"], "TkFixedFont"
         )
-        self.ui_font = (ui_font_family, 10)
-        self.ui_font_bold = (ui_font_family, 10, "bold")
-        self.title_font = (ui_font_family, 15, "bold")
-        self.table_font = (monospace_font_family, 10)
+        self.ui_font = (ui_font_family, FONT_SIZE_BODY)
+        self.ui_font_bold = (ui_font_family, FONT_SIZE_BODY, "bold")
+        self.caption_font = (ui_font_family, FONT_SIZE_CAPTION)
+        self.title_font = (ui_font_family, FONT_SIZE_TITLE, "bold")
+        self.table_font = (monospace_font_family, FONT_SIZE_TABLE)
+        self.table_heading_font = (ui_font_family, FONT_SIZE_CAPTION, "bold")
 
+    def _configure_styles(self) -> None:
+        """把当前色板写进 ttk 样式。切换主题时会再次调用。"""
+        palette = self.palette
         style = ttk.Style(self.root)
         # clam 是少数允许自定义配色的内置主题，Windows 默认主题会忽略大部分颜色设置。
         if "clam" in style.theme_names():
             style.theme_use("clam")
 
-        style.configure("TFrame", background=COLOR_WINDOW_BACKGROUND)
-        style.configure("Surface.TFrame", background=COLOR_SURFACE)
-        style.configure(
-            "TLabel", background=COLOR_WINDOW_BACKGROUND, foreground=COLOR_TEXT_PRIMARY, font=self.ui_font
-        )
-        style.configure("Title.TLabel", font=self.title_font)
-        style.configure("Muted.TLabel", foreground=COLOR_TEXT_MUTED)
-        style.configure("TEntry", fieldbackground=COLOR_SURFACE, font=self.ui_font)
-        style.configure("TCombobox", fieldbackground=COLOR_SURFACE, font=self.ui_font)
+        style.configure("TFrame", background=palette.window)
+        style.configure("Surface.TFrame", background=palette.surface)
+        style.configure("Toolbar.TFrame", background=palette.surface_raised)
+        # 用一像素实色 Frame 当分隔线，比 ttk.Separator 在 clam 下更可控。
+        style.configure("Divider.TFrame", background=palette.border)
 
-        style.configure("TButton", font=self.ui_font, padding=(12, 6))
         style.configure(
-            "Accent.TButton",
-            font=self.ui_font_bold,
-            foreground="#ffffff",
-            background=COLOR_ACCENT,
-            padding=(14, 7),
-            borderwidth=0,
+            "TLabel", background=palette.window, foreground=palette.text_primary, font=self.ui_font
         )
+        style.configure("Toolbar.TLabel", background=palette.surface_raised)
+        style.configure(
+            "Title.TLabel",
+            background=palette.surface_raised,
+            foreground=palette.text_primary,
+            font=self.title_font,
+        )
+        style.configure(
+            "Subtitle.TLabel",
+            background=palette.surface_raised,
+            foreground=palette.text_secondary,
+            font=self.ui_font,
+        )
+        style.configure(
+            "Muted.TLabel",
+            background=palette.window,
+            foreground=palette.text_secondary,
+            font=self.ui_font,
+        )
+        style.configure(
+            "Status.TLabel",
+            background=palette.window,
+            foreground=palette.text_secondary,
+            font=self.caption_font,
+        )
+        style.configure(
+            "FieldLabel.TLabel",
+            background=palette.window,
+            foreground=palette.text_secondary,
+            font=self.ui_font,
+        )
+
+        style.configure(
+            "TEntry",
+            fieldbackground=palette.surface,
+            foreground=palette.text_primary,
+            insertcolor=palette.text_primary,
+            bordercolor=palette.border,
+            lightcolor=palette.border,
+            darkcolor=palette.border,
+            font=self.ui_font,
+            padding=(SPACE_SM, SPACE_XS + 1),
+        )
+        style.map("TEntry", bordercolor=[("focus", palette.accent)])
+        # 端口输入框是主路径入口，字号略大并加粗，视觉上给它应有的地位。
+        style.configure(
+            "Port.TEntry",
+            fieldbackground=palette.surface,
+            foreground=palette.text_primary,
+            insertcolor=palette.text_primary,
+            bordercolor=palette.border,
+            font=(self.table_font[0], FONT_SIZE_BODY + 1, "bold"),
+            padding=(SPACE_SM, SPACE_XS + 2),
+        )
+        style.map("Port.TEntry", bordercolor=[("focus", palette.accent)])
+
+        style.configure(
+            "TCombobox",
+            fieldbackground=palette.surface,
+            background=palette.surface,
+            foreground=palette.text_primary,
+            arrowcolor=palette.text_secondary,
+            bordercolor=palette.border,
+            lightcolor=palette.border,
+            darkcolor=palette.border,
+            font=self.ui_font,
+            padding=(SPACE_XS, SPACE_XS),
+        )
+        # clam 下 readonly 的 Combobox 会退回主题默认配色，导致暗色主题里
+        # 文字与底色撞成一片、看起来像空白框。必须显式映射每个状态。
         style.map(
-            "Accent.TButton",
-            background=[("pressed", COLOR_ACCENT_ACTIVE), ("active", COLOR_ACCENT_ACTIVE), ("disabled", "#9db4ee")],
+            "TCombobox",
+            fieldbackground=[
+                ("readonly", palette.surface),
+                ("disabled", palette.window),
+            ],
+            foreground=[
+                ("readonly", palette.text_primary),
+                ("disabled", palette.text_disabled),
+            ],
+            selectbackground=[("readonly", palette.surface)],
+            selectforeground=[("readonly", palette.text_primary)],
+            bordercolor=[("focus", palette.accent)],
+            arrowcolor=[("disabled", palette.text_disabled)],
         )
+        # 下拉列表是独立弹出窗口，不吃 style，只能通过全局 option 设置。
+        self.root.option_add("*TCombobox*Listbox.background", palette.surface)
+        self.root.option_add("*TCombobox*Listbox.foreground", palette.text_primary)
+        self.root.option_add("*TCombobox*Listbox.selectBackground", palette.accent)
+        self.root.option_add("*TCombobox*Listbox.selectForeground", palette.accent_text)
+        self.root.option_add("*TCombobox*Listbox.font", self.ui_font)
+
+        # 按钮分三级：危险（实心红）> 主要（实心蓝）> 次要（描边）。
+        # 破坏性操作必须最重，避免与「刷新」这类无害操作视觉等价。
         style.configure(
             "Danger.TButton",
             font=self.ui_font_bold,
-            foreground="#ffffff",
-            background=COLOR_DANGER,
-            padding=(14, 7),
+            foreground=palette.danger_text,
+            background=palette.danger,
+            bordercolor=palette.danger,
+            focuscolor=palette.danger_text,
+            padding=(SPACE_LG, SPACE_SM),
             borderwidth=0,
+            relief="flat",
         )
         style.map(
             "Danger.TButton",
-            background=[("pressed", COLOR_DANGER_ACTIVE), ("active", COLOR_DANGER_ACTIVE), ("disabled", "#eda3a3")],
+            background=[
+                ("disabled", palette.border),
+                ("pressed", palette.danger_hover),
+                ("active", palette.danger_hover),
+            ],
+            foreground=[("disabled", palette.text_disabled)],
         )
 
         style.configure(
-            "Ports.Treeview",
-            background=COLOR_SURFACE,
-            fieldbackground=COLOR_SURFACE,
-            foreground=COLOR_TEXT_PRIMARY,
-            rowheight=27,
-            font=self.table_font,
+            "Accent.TButton",
+            font=self.ui_font_bold,
+            foreground=palette.accent_text,
+            background=palette.accent,
+            bordercolor=palette.accent,
+            focuscolor=palette.accent_text,
+            padding=(SPACE_LG, SPACE_SM),
+            borderwidth=0,
+            relief="flat",
+        )
+        style.map(
+            "Accent.TButton",
+            background=[
+                ("disabled", palette.border),
+                ("pressed", palette.accent_hover),
+                ("active", palette.accent_hover),
+            ],
+            foreground=[("disabled", palette.text_disabled)],
+        )
+
+        style.configure(
+            "Secondary.TButton",
+            font=self.ui_font,
+            foreground=palette.text_primary,
+            background=palette.window,
+            bordercolor=palette.border,
+            focuscolor=palette.accent,
+            padding=(SPACE_MD, SPACE_SM),
             borderwidth=1,
             relief="solid",
         )
+        style.map(
+            "Secondary.TButton",
+            background=[("disabled", palette.window), ("active", palette.surface)],
+            foreground=[("disabled", palette.text_disabled)],
+            bordercolor=[("active", palette.accent)],
+        )
+
+        style.configure(
+            "Ports.Treeview",
+            background=palette.surface,
+            fieldbackground=palette.surface,
+            foreground=palette.text_primary,
+            rowheight=TABLE_ROW_HEIGHT,
+            font=self.table_font,
+            borderwidth=0,
+            relief="flat",
+        )
         style.configure(
             "Ports.Treeview.Heading",
-            font=self.ui_font_bold,
-            background="#eceef1",
-            foreground=COLOR_TEXT_PRIMARY,
+            font=self.table_heading_font,
+            background=palette.surface_raised,
+            foreground=palette.text_secondary,
+            bordercolor=palette.border,
             relief="flat",
-            padding=(6, 8),
+            padding=(SPACE_SM, SPACE_SM),
         )
-        style.map("Ports.Treeview.Heading", background=[("active", "#e0e3e8")])
+        style.map(
+            "Ports.Treeview.Heading",
+            background=[("active", palette.border)],
+            foreground=[("active", palette.text_primary)],
+        )
         style.map(
             "Ports.Treeview",
-            background=[("selected", COLOR_ACCENT)],
-            foreground=[("selected", "#ffffff")],
+            background=[("selected", palette.selection)],
+            foreground=[("selected", palette.selection_text)],
         )
+
+        style.configure(
+            "Vertical.TScrollbar",
+            background=palette.surface_raised,
+            troughcolor=palette.window,
+            bordercolor=palette.window,
+            arrowcolor=palette.text_secondary,
+            relief="flat",
+        )
+        style.map("Vertical.TScrollbar", background=[("active", palette.border)])
 
     def _build_toolbar(self) -> None:
-        header = ttk.Frame(self.root, padding=(16, 14, 16, 6))
+        """页头 + 筛选栏。
+
+        页头用略高一层的底色并以一像素分隔线收边，让「品牌与主操作」
+        和下方的「筛选条件」形成明确的分区，而不是所有控件平铺在同一片灰底上。
+        """
+        header = ttk.Frame(self.root, style="Toolbar.TFrame", padding=(SPACE_XL, SPACE_LG, SPACE_XL, SPACE_LG))
         header.pack(fill="x")
 
-        ttk.Label(header, text="端口占用管理", style="Title.TLabel").pack(side="left")
+        title_area = ttk.Frame(header, style="Toolbar.TFrame")
+        title_area.pack(side="left")
+        ttk.Label(title_area, text="端口占用管理", style="Title.TLabel").pack(anchor="w")
         ttk.Label(
-            header,
-            text="查看谁占用了端口，并安全地释放它",
-            style="Muted.TLabel",
-        ).pack(side="left", padx=(12, 0), pady=(4, 0))
+            title_area,
+            text="查清是谁占着端口，然后安全地释放它",
+            style="Subtitle.TLabel",
+        ).pack(anchor="w", pady=(SPACE_XS, 0))
 
-        quick_release_area = ttk.Frame(header)
+        # 主路径：输入端口 → 释放。放在页头右侧并给足视觉重量。
+        quick_release_area = ttk.Frame(header, style="Toolbar.TFrame")
         quick_release_area.pack(side="right")
-        ttk.Label(quick_release_area, text="快速释放端口").pack(side="left", padx=(0, 6))
+        ttk.Label(
+            quick_release_area, text="快速释放端口", style="Subtitle.TLabel"
+        ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, SPACE_XS))
+
         quick_release_entry = ttk.Entry(
-            quick_release_area, textvariable=self.quick_release_port, width=10, justify="center"
+            quick_release_area,
+            textvariable=self.quick_release_port,
+            width=9,
+            justify="center",
+            style="Port.TEntry",
         )
-        quick_release_entry.pack(side="left")
+        quick_release_entry.grid(row=1, column=0, sticky="ew")
         quick_release_entry.bind("<Return>", lambda event: self.release_port_from_entry())
+
         self.quick_release_button = ttk.Button(
             quick_release_area,
             text="释放",
             style="Danger.TButton",
             command=self.release_port_from_entry,
         )
-        self.quick_release_button.pack(side="left", padx=(6, 0))
+        self.quick_release_button.grid(row=1, column=1, sticky="ew", padx=(SPACE_SM, 0))
 
-        filter_bar = ttk.Frame(self.root, padding=(16, 6, 16, 10))
+        ttk.Frame(self.root, style="Divider.TFrame", height=1).pack(fill="x")
+
+        filter_bar = ttk.Frame(self.root, padding=(SPACE_XL, SPACE_MD, SPACE_XL, SPACE_MD))
         filter_bar.pack(fill="x")
 
-        ttk.Label(filter_bar, text="搜索").pack(side="left")
-        search_entry = ttk.Entry(filter_bar, textvariable=self.search_keyword, width=26)
-        search_entry.pack(side="left", padx=(6, 14))
-        search_entry.insert(0, "")
+        ttk.Label(filter_bar, text="搜索", style="FieldLabel.TLabel").pack(side="left")
+        search_entry = ttk.Entry(filter_bar, textvariable=self.search_keyword, width=24)
+        search_entry.pack(side="left", padx=(SPACE_SM, SPACE_LG))
         self.search_keyword.trace_add("write", lambda *_: self._render_table())
 
-        ttk.Label(filter_bar, text="协议").pack(side="left")
+        ttk.Label(filter_bar, text="协议", style="FieldLabel.TLabel").pack(side="left")
         protocol_combobox = ttk.Combobox(
             filter_bar,
             textvariable=self.protocol_filter,
@@ -365,18 +616,29 @@ class PortManagerApplication:
             width=6,
             state="readonly",
         )
-        protocol_combobox.pack(side="left", padx=(6, 14))
+        protocol_combobox.pack(side="left", padx=(SPACE_SM, SPACE_LG))
         protocol_combobox.bind("<<ComboboxSelected>>", lambda event: self._render_table())
 
         self._create_checkbutton(
             filter_bar, "仅监听端口", self.show_listening_only, self._render_table
-        ).pack(side="left", padx=(0, 12))
+        ).pack(side="left", padx=(0, SPACE_MD))
         self._create_checkbutton(
             filter_bar, "隐藏系统进程", self.hide_system_processes, self._render_table
-        ).pack(side="left", padx=(0, 12))
+        ).pack(side="left", padx=(0, SPACE_MD))
         self._create_checkbutton(
             filter_bar, "只看开发端口", self.show_dev_ports_only, self._render_table
         ).pack(side="left")
+
+        # 右侧放低频的环境类开关：主题、自动刷新。
+        self.theme_button = ttk.Button(
+            filter_bar,
+            text="暗色",
+            style="Secondary.TButton",
+            width=6,
+            command=self.toggle_theme,
+        )
+        self.theme_button.pack(side="right", padx=(SPACE_MD, 0))
+        self._update_theme_button_label()
 
         auto_refresh_area = ttk.Frame(filter_bar)
         auto_refresh_area.pack(side="right")
@@ -387,18 +649,28 @@ class PortManagerApplication:
             width=6,
             state="readonly",
         )
-        interval_combobox.pack(side="right", padx=(6, 0))
+        interval_combobox.pack(side="right", padx=(SPACE_SM, 0))
         interval_combobox.bind("<<ComboboxSelected>>", lambda event: self._reschedule_auto_refresh())
         self._create_checkbutton(
             auto_refresh_area, "自动刷新", self.auto_refresh_enabled, self._reschedule_auto_refresh
         ).pack(side="right")
 
     def _build_table(self) -> None:
-        table_container = ttk.Frame(self.root, padding=(16, 0))
+        table_container = ttk.Frame(self.root, padding=(SPACE_XL, 0))
         table_container.pack(fill="both", expand=True)
 
-        self.table = ttk.Treeview(
+        # 给表格包一层描边，让它看起来是一块「内容面板」而不是浮在灰底上的散行。
+        table_frame = tk.Frame(
             table_container,
+            background=self.palette.border,
+            highlightthickness=0,
+            borderwidth=0,
+        )
+        table_frame.pack(fill="both", expand=True)
+        self.table_frame = table_frame
+
+        self.table = ttk.Treeview(
+            table_frame,
             columns=[column_id for column_id, _, _, _ in TABLE_COLUMNS],
             show="headings",
             selectmode="extended",
@@ -411,24 +683,27 @@ class PortManagerApplication:
                 anchor=anchor,
                 command=lambda name=column_id: self._toggle_sort_by_column(name),
             )
-            self.table.column(column_id, width=column_width, anchor=anchor, stretch=(column_id == "process"))
+            self.table.column(
+                column_id,
+                width=column_width,
+                minwidth=column_width,
+                anchor=anchor,
+                stretch=(column_id in {"process", "address"}),
+            )
 
-        vertical_scrollbar = ttk.Scrollbar(table_container, orient="vertical", command=self.table.yview)
+        vertical_scrollbar = ttk.Scrollbar(table_frame, orient="vertical", command=self.table.yview)
         self.table.configure(yscrollcommand=vertical_scrollbar.set)
-        self.table.pack(side="left", fill="both", expand=True)
-        vertical_scrollbar.pack(side="right", fill="y")
+        # 留 1px 边框：外层 Frame 的底色透出来即为描边。
+        self.table.pack(side="left", fill="both", expand=True, padx=(1, 0), pady=1)
+        vertical_scrollbar.pack(side="right", fill="y", padx=(0, 1), pady=1)
 
-        self.table.tag_configure("stripe", background=COLOR_STRIPE_BACKGROUND)
-        self.table.tag_configure(
-            "system_process", background=COLOR_SYSTEM_ROW_BACKGROUND, foreground=COLOR_SYSTEM_ROW_TEXT
-        )
-        self.table.tag_configure("kernel_placeholder", foreground=COLOR_KERNEL_ROW_TEXT)
+        self._configure_table_row_tags()
 
         self.table.bind("<Double-1>", lambda event: self.show_selected_process_details())
         self.table.bind("<Button-3>", self._show_context_menu)
         self.table.bind("<<TreeviewSelect>>", lambda event: self._update_action_button_states())
 
-        self.context_menu = tk.Menu(self.root, tearoff=0, font=self.ui_font)
+        self.context_menu = tk.Menu(self.root, tearoff=0)
         self.context_menu.add_command(label="终止选中进程", command=self.terminate_selected_rows)
         self.context_menu.add_command(
             label="强制终止（跳过保护）", command=lambda: self.terminate_selected_rows(force=True)
@@ -436,41 +711,79 @@ class PortManagerApplication:
         self.context_menu.add_separator()
         self.context_menu.add_command(label="查看进程详情", command=self.show_selected_process_details)
         self.context_menu.add_command(label="复制这一行", command=self.copy_selected_rows)
+        self._paint_context_menu()
+
+    def _configure_table_row_tags(self) -> None:
+        """按当前色板配置行标签。
+
+        标签的着色只表达三件事，别的一律不着色：
+          * 这一行是不是用户在找的开发端口（淡品牌底 + 加粗）
+          * 这一行能不能杀（系统保护 → 琥珀；内核残留 → 降低对比度）
+          * 斑马纹（纯粹辅助横向扫读）
+        """
+        palette = self.palette
+        if hasattr(self, "table_frame"):
+            self.table_frame.configure(background=palette.border)
+
+        self.table.tag_configure("stripe", background=palette.row_stripe)
+        self.table.tag_configure(
+            "dev_port", background=palette.accent_soft, font=(self.table_font[0], FONT_SIZE_TABLE, "bold")
+        )
+        self.table.tag_configure(
+            "system_process", background=palette.caution_soft, foreground=palette.caution
+        )
+        # 内核残留不可操作，压低对比度让它自然退到背景里，但仍保持可读。
+        self.table.tag_configure("kernel_placeholder", foreground=palette.text_disabled)
 
     def _build_action_bar(self) -> None:
-        action_bar = ttk.Frame(self.root, padding=(16, 12, 16, 8))
+        """操作栏。
+
+        按钮的视觉重量按破坏性排序：终止（实心红）> 刷新（实心蓝）> 详情/复制（描边）。
+        原先四个按钮里两个是实心高饱和色，「刷新」和「终止」几乎等价，
+        对不可撤销的操作来说过于危险。
+        """
+        action_bar = ttk.Frame(self.root, padding=(SPACE_XL, SPACE_MD, SPACE_XL, SPACE_SM))
         action_bar.pack(fill="x")
 
-        self.refresh_button = ttk.Button(
-            action_bar, text="刷新 (F5)", style="Accent.TButton", command=self.request_refresh
-        )
-        self.refresh_button.pack(side="left")
-
         self.terminate_button = ttk.Button(
-            action_bar, text="终止选中进程", style="Danger.TButton", command=self.terminate_selected_rows
+            action_bar,
+            text="终止选中进程",
+            style="Danger.TButton",
+            command=self.terminate_selected_rows,
         )
-        self.terminate_button.pack(side="left", padx=(10, 0))
+        self.terminate_button.pack(side="left")
+
+        self.refresh_button = ttk.Button(
+            action_bar, text="刷新", style="Accent.TButton", command=self.request_refresh
+        )
+        self.refresh_button.pack(side="left", padx=(SPACE_MD, 0))
 
         self.details_button = ttk.Button(
-            action_bar, text="进程详情", command=self.show_selected_process_details
+            action_bar,
+            text="进程详情",
+            style="Secondary.TButton",
+            command=self.show_selected_process_details,
         )
-        self.details_button.pack(side="left", padx=(10, 0))
+        self.details_button.pack(side="left", padx=(SPACE_MD, 0))
 
-        self.copy_button = ttk.Button(action_bar, text="复制", command=self.copy_selected_rows)
-        self.copy_button.pack(side="left", padx=(10, 0))
+        self.copy_button = ttk.Button(
+            action_bar, text="复制", style="Secondary.TButton", command=self.copy_selected_rows
+        )
+        self.copy_button.pack(side="left", padx=(SPACE_SM, 0))
 
         ttk.Label(
             action_bar,
-            text="双击查看详情 · 右键更多操作 · 支持多选批量终止",
-            style="Muted.TLabel",
+            text="双击查看详情 · 右键更多操作 · F5 刷新 · Delete 终止",
+            style="Status.TLabel",
         ).pack(side="right")
 
         self._update_action_button_states()
 
     def _build_status_bar(self) -> None:
-        status_bar = ttk.Frame(self.root, padding=(16, 0, 16, 12))
+        ttk.Frame(self.root, style="Divider.TFrame", height=1).pack(fill="x")
+        status_bar = ttk.Frame(self.root, padding=(SPACE_XL, SPACE_SM, SPACE_XL, SPACE_MD))
         status_bar.pack(fill="x")
-        ttk.Label(status_bar, textvariable=self.status_message, style="Muted.TLabel").pack(side="left")
+        ttk.Label(status_bar, textvariable=self.status_message, style="Status.TLabel").pack(side="left")
 
     def _bind_shortcuts(self) -> None:
         self.root.bind("<F5>", lambda event: self.request_refresh())
@@ -644,17 +957,26 @@ class PortManagerApplication:
         self.displayed_bindings = self._collect_visible_bindings()
         self.table.delete(*self.table.get_children())
 
+        common_dev_ports = set(COMMON_DEV_PORTS)
+
         for row_index, binding in enumerate(self.displayed_bindings):
+            disposition = classify_binding(binding)
             row_tags: list[str] = []
-            if binding.pid <= 0:
+
+            if disposition == DISPOSITION_KERNEL:
+                # 没有真实进程，显示进程名会让人以为可以去杀它。
                 process_label = "内核残留连接"
                 row_tags.append("kernel_placeholder")
-            elif binding.is_protected:
-                process_label = f"{binding.process_name}  [系统]"
+            elif disposition == DISPOSITION_PROTECTED:
+                process_label = binding.process_name
                 row_tags.append("system_process")
             else:
                 process_label = binding.process_name
-                if row_index % 2 == 1:
+                # 用户几乎总是在找开发端口，这类行不用筛选就该能被扫到；
+                # 其余可终止行用斑马纹辅助横向阅读。
+                if binding.local_port in common_dev_ports:
+                    row_tags.append("dev_port")
+                elif row_index % 2 == 1:
                     row_tags.append("stripe")
 
             self.table.insert(
@@ -664,9 +986,10 @@ class PortManagerApplication:
                 values=(
                     binding.local_port,
                     binding.protocol,
-                    binding.state or "-",
-                    binding.pid,
+                    binding.state or "—",
+                    binding.pid if binding.pid > 0 else "—",
                     process_label,
+                    DISPOSITION_LABELS[disposition],
                     binding.local_address,
                 ),
                 tags=tuple(row_tags),

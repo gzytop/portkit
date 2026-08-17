@@ -29,6 +29,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 import portkit  # noqa: E402  (必须在调整 sys.path 之后导入)
+import theme  # noqa: E402
 
 
 def reserve_free_port() -> int:
@@ -331,6 +332,114 @@ class NonUtf8ConsoleTests(unittest.TestCase):
             0,
             f"portkit.py 在 cp1252 控制台下失败：{completed.stderr.decode('utf-8', 'replace')}",
         )
+
+
+class DesignTokenTests(unittest.TestCase):
+    """色板必须满足 WCAG AA，且这条约束要被自动守住。
+
+    颜色是这个工具传达「能不能杀」的主要手段，配色退化会直接损害可用性，
+    所以对比度不能靠肉眼判断——两套主题的每个真实组合都在这里断言。
+    """
+
+    def test_oklch_conversion_produces_valid_hex(self):
+        for lightness in (0.0, 0.25, 0.5, 0.75, 1.0):
+            hex_color = theme.oklch_to_hex(lightness, 0.1, 250.0)
+            self.assertRegex(hex_color, r"^#[0-9a-f]{6}$")
+
+    def test_oklch_lightness_is_monotonic(self):
+        """亮度递增时，感知亮度也应递增——这是色板推导成立的前提。"""
+        luminances = [
+            theme.relative_luminance(theme.oklch_to_hex(lightness, 0.05, 250.0))
+            for lightness in (0.2, 0.4, 0.6, 0.8)
+        ]
+        self.assertEqual(luminances, sorted(luminances))
+
+    def test_contrast_ratio_matches_known_values(self):
+        # 黑白对比度是 21:1，同色是 1:1，用这两个已知值验证公式实现。
+        self.assertAlmostEqual(theme.contrast_ratio("#000000", "#ffffff"), 21.0, places=1)
+        self.assertAlmostEqual(theme.contrast_ratio("#777777", "#777777"), 1.0, places=2)
+
+    def test_light_palette_meets_wcag_aa(self):
+        self._assert_palette_meets_aa(theme.LIGHT_PALETTE)
+
+    def test_dark_palette_meets_wcag_aa(self):
+        self._assert_palette_meets_aa(theme.DARK_PALETTE)
+
+    def _assert_palette_meets_aa(self, palette: theme.Palette) -> None:
+        for label, foreground, background in theme.critical_contrast_pairs(palette):
+            ratio = theme.contrast_ratio(foreground, background)
+            self.assertGreaterEqual(
+                ratio,
+                4.5,
+                f"[{palette.name}] {label} 对比度仅 {ratio:.2f}:1，低于 WCAG AA 要求的 4.5:1",
+            )
+
+    def test_neutrals_are_tinted_toward_brand_hue(self):
+        """中性色应带一点品牌色相，纯灰会让界面显得廉价。"""
+        surface_digits = theme.LIGHT_PALETTE.surface.lstrip("#")
+        red, green, blue = (int(surface_digits[i : i + 2], 16) for i in (0, 2, 4))
+        self.assertGreaterEqual(blue, red, "亮色表面应偏冷（蓝通道不低于红通道）")
+
+    def test_themes_are_actually_different(self):
+        self.assertNotEqual(theme.LIGHT_PALETTE.window, theme.DARK_PALETTE.window)
+        self.assertFalse(theme.LIGHT_PALETTE.is_dark)
+        self.assertTrue(theme.DARK_PALETTE.is_dark)
+
+    def test_dark_theme_is_darker_than_light(self):
+        light_luminance = theme.relative_luminance(theme.LIGHT_PALETTE.window)
+        dark_luminance = theme.relative_luminance(theme.DARK_PALETTE.window)
+        self.assertGreater(light_luminance, dark_luminance)
+
+
+class DispositionClassificationTests(unittest.TestCase):
+    """处置分类决定表格文案与能否终止，必须与 portkit 的保护策略一致。"""
+
+    @classmethod
+    def setUpClass(cls):
+        import portkit_gui
+
+        cls.portkit_gui = portkit_gui
+
+    def _make_binding(self, pid: int, process_name: str) -> portkit.PortBinding:
+        return portkit.PortBinding("TCP", "0.0.0.0", 3000, "LISTENING", pid, process_name)
+
+    def test_kernel_placeholder_is_classified_as_kernel(self):
+        self.assertEqual(
+            self.portkit_gui.classify_binding(self._make_binding(0, "System Idle Process")),
+            self.portkit_gui.DISPOSITION_KERNEL,
+        )
+
+    def test_system_process_is_classified_as_protected(self):
+        self.assertEqual(
+            self.portkit_gui.classify_binding(self._make_binding(1234, "svchost.exe")),
+            self.portkit_gui.DISPOSITION_PROTECTED,
+        )
+
+    def test_ordinary_process_is_classified_as_killable(self):
+        self.assertEqual(
+            self.portkit_gui.classify_binding(self._make_binding(1234, "node.exe")),
+            self.portkit_gui.DISPOSITION_KILLABLE,
+        )
+
+    def test_every_disposition_has_a_readable_label(self):
+        """状态不能只靠颜色区分，每种分类都要有文字标签。"""
+        for disposition in (
+            self.portkit_gui.DISPOSITION_KILLABLE,
+            self.portkit_gui.DISPOSITION_PROTECTED,
+            self.portkit_gui.DISPOSITION_KERNEL,
+        ):
+            self.assertIn(disposition, self.portkit_gui.DISPOSITION_LABELS)
+            self.assertTrue(self.portkit_gui.DISPOSITION_LABELS[disposition].strip())
+
+    def test_classification_agrees_with_protection_policy(self):
+        """分类为「可终止」的记录，不能是 portkit 认定的受保护进程。"""
+        for process_name in ("System", "lsass.exe", "svchost.exe", "systemd"):
+            binding = self._make_binding(4321, process_name)
+            self.assertNotEqual(
+                self.portkit_gui.classify_binding(binding),
+                self.portkit_gui.DISPOSITION_KILLABLE,
+                f"{process_name} 受 portkit 保护，却被分类为可终止",
+            )
 
 
 def graphical_display_is_available() -> bool:
