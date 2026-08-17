@@ -5,6 +5,7 @@
 ![界面截图](docs/screenshot.png)
 
 <p align="center">
+  <a href="https://github.com/gzytop/portkit/actions/workflows/ci.yml"><img src="https://github.com/gzytop/portkit/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <img src="https://img.shields.io/badge/Python-3.9%2B-3776AB?logo=python&logoColor=white" alt="Python 3.9+">
   <img src="https://img.shields.io/badge/依赖-零第三方库-2563eb" alt="零依赖">
   <img src="https://img.shields.io/badge/平台-Windows%20%7C%20macOS%20%7C%20Linux-6b7280" alt="平台">
@@ -326,11 +327,55 @@ portkit/
 ├── portkit.spec        # PyInstaller 打包配置
 ├── make_icon.py        # 生成图标（手写 ICO 字节，不需要 Pillow）
 ├── version_info.txt    # exe 的 Windows 版本信息
+├── tests/
+│   └── smoke_test.py   # 冒烟测试（标准库 unittest，本地与 CI 共用）
+├── .github/
+│   ├── workflows/      # CI 与自动发版流水线
+│   └── scripts/        # 流水线用到的辅助脚本
 └── docs/
     └── screenshot.png
 ```
 
 GUI 是对 `portkit.py` 的一层封装，不重复实现任何逻辑，所以两种用法的行为和安全策略天然一致。
+
+## 参与开发
+
+### 跑测试
+
+```bash
+python tests/smoke_test.py        # 全部测试
+python tests/smoke_test.py -v     # 显示每项名称
+```
+
+测试只用标准库 `unittest`，无需安装任何东西。其中端口相关的用例会**真实占用一个系统分配的空闲端口、起一个子进程再终止它**，而不是用 mock —— 因为这个工具的价值就在于跟真实操作系统打交道，mock 掉就等于什么都没测。
+
+没有图形显示的环境（如无头服务器）会自动跳过 GUI 用例。
+
+### 持续集成
+
+每次推送都会在 **Windows / macOS / Ubuntu** 三个平台跑同一份测试，另外用 Python 3.9 兜一遍最低版本兼容性。
+
+跨平台跑不是为了凑数：Windows 走 `netstat`/`taskkill`，POSIX 走 `lsof`/`ss` + 信号，只在一个平台测等于另一条分支从未被验证。CI 建立后立刻抓出了两个只在特定平台出现的真实缺陷：
+
+- **POSIX 上僵尸进程被误判为「仍在运行」** — 进程被杀后会先变成僵尸（已退出但未被父进程回收），而 `os.kill(pid, 0)` 对僵尸依然成功，导致终止操作等到超时并误报失败
+- **中文输出在 cp1252 控制台上直接崩溃** — 英文版 Windows 与 CI runner 的默认编码不是 UTF-8，`make_icon.py` 打印中文时抛 `UnicodeEncodeError`，让构建失败在生成图标这步
+
+Ubuntu 的任务**故意不安装 `lsof`**，好让「没有 lsof 时退回 `ss`」这条备选路径真的被执行到。
+
+### 发版
+
+打一个 `v` 开头的 tag 即可，其余自动完成：
+
+```bash
+git tag v1.2.0
+git push origin v1.2.0
+```
+
+流水线会依次：跑测试 → 生成图标 → 打包 exe → 校验产物大小是否合理 → **真实启动 exe 确认能创建窗口** → 计算 SHA256 → 创建 Release 并上传。
+
+最后那一步很关键：PyInstaller 常见的坑是「构建成功但一运行就因缺模块退出」，只检查文件存在是发现不了的。
+
+也可以在 Actions 页面手动触发 Release 流水线，此时只产出构建物、不创建 Release，用于验证打包链路本身。
 
 ## License
 
