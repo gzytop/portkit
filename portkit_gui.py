@@ -600,11 +600,13 @@ class PortManagerApplication:
 
         ttk.Frame(self.root, style="Divider.TFrame", height=1).pack(fill="x")
 
+        # 筛选栏只放「筛选条件」。自动刷新属于刷新行为、主题属于环境设置，
+        # 分别归到操作栏与状态栏——这样每一栏都不会因控件过多而挤掉文字。
         filter_bar = ttk.Frame(self.root, padding=(SPACE_XL, SPACE_MD, SPACE_XL, SPACE_MD))
         filter_bar.pack(fill="x")
 
         ttk.Label(filter_bar, text="搜索", style="FieldLabel.TLabel").pack(side="left")
-        search_entry = ttk.Entry(filter_bar, textvariable=self.search_keyword, width=24)
+        search_entry = ttk.Entry(filter_bar, textvariable=self.search_keyword, width=22)
         search_entry.pack(side="left", padx=(SPACE_SM, SPACE_LG))
         self.search_keyword.trace_add("write", lambda *_: self._render_table())
 
@@ -628,32 +630,6 @@ class PortManagerApplication:
         self._create_checkbutton(
             filter_bar, "只看开发端口", self.show_dev_ports_only, self._render_table
         ).pack(side="left")
-
-        # 右侧放低频的环境类开关：主题、自动刷新。
-        self.theme_button = ttk.Button(
-            filter_bar,
-            text="暗色",
-            style="Secondary.TButton",
-            width=6,
-            command=self.toggle_theme,
-        )
-        self.theme_button.pack(side="right", padx=(SPACE_MD, 0))
-        self._update_theme_button_label()
-
-        auto_refresh_area = ttk.Frame(filter_bar)
-        auto_refresh_area.pack(side="right")
-        interval_combobox = ttk.Combobox(
-            auto_refresh_area,
-            textvariable=self.auto_refresh_interval_label,
-            values=list(AUTO_REFRESH_INTERVAL_CHOICES),
-            width=6,
-            state="readonly",
-        )
-        interval_combobox.pack(side="right", padx=(SPACE_SM, 0))
-        interval_combobox.bind("<<ComboboxSelected>>", lambda event: self._reschedule_auto_refresh())
-        self._create_checkbutton(
-            auto_refresh_area, "自动刷新", self.auto_refresh_enabled, self._reschedule_auto_refresh
-        ).pack(side="right")
 
     def _build_table(self) -> None:
         table_container = ttk.Frame(self.root, padding=(SPACE_XL, 0))
@@ -741,6 +717,9 @@ class PortManagerApplication:
         按钮的视觉重量按破坏性排序：终止（实心红）> 刷新（实心蓝）> 详情/复制（描边）。
         原先四个按钮里两个是实心高饱和色，「刷新」和「终止」几乎等价，
         对不可撤销的操作来说过于危险。
+
+        「自动刷新」紧跟在「刷新」右边——它修饰的是刷新行为，
+        放在筛选栏里既不符合语义，也会因控件过多挤掉文字。
         """
         action_bar = ttk.Frame(self.root, padding=(SPACE_XL, SPACE_MD, SPACE_XL, SPACE_SM))
         action_bar.pack(fill="x")
@@ -758,13 +737,28 @@ class PortManagerApplication:
         )
         self.refresh_button.pack(side="left", padx=(SPACE_MD, 0))
 
+        auto_refresh_area = ttk.Frame(action_bar)
+        auto_refresh_area.pack(side="left", padx=(SPACE_MD, 0))
+        self._create_checkbutton(
+            auto_refresh_area, "自动", self.auto_refresh_enabled, self._reschedule_auto_refresh
+        ).pack(side="left")
+        interval_combobox = ttk.Combobox(
+            auto_refresh_area,
+            textvariable=self.auto_refresh_interval_label,
+            values=list(AUTO_REFRESH_INTERVAL_CHOICES),
+            width=6,
+            state="readonly",
+        )
+        interval_combobox.pack(side="left", padx=(SPACE_XS, 0))
+        interval_combobox.bind("<<ComboboxSelected>>", lambda event: self._reschedule_auto_refresh())
+
         self.details_button = ttk.Button(
             action_bar,
             text="进程详情",
             style="Secondary.TButton",
             command=self.show_selected_process_details,
         )
-        self.details_button.pack(side="left", padx=(SPACE_MD, 0))
+        self.details_button.pack(side="left", padx=(SPACE_LG, 0))
 
         self.copy_button = ttk.Button(
             action_bar, text="复制", style="Secondary.TButton", command=self.copy_selected_rows
@@ -773,17 +767,35 @@ class PortManagerApplication:
 
         ttk.Label(
             action_bar,
-            text="双击查看详情 · 右键更多操作 · F5 刷新 · Delete 终止",
+            text="双击查看详情 · 右键更多操作",
             style="Status.TLabel",
         ).pack(side="right")
 
         self._update_action_button_states()
 
     def _build_status_bar(self) -> None:
+        """状态栏：左侧统计，右侧放主题切换。
+
+        主题属于低频的环境设置，放在视觉层级最低的位置，
+        不与筛选条件和操作按钮抢注意力。
+        """
         ttk.Frame(self.root, style="Divider.TFrame", height=1).pack(fill="x")
         status_bar = ttk.Frame(self.root, padding=(SPACE_XL, SPACE_SM, SPACE_XL, SPACE_MD))
         status_bar.pack(fill="x")
-        ttk.Label(status_bar, textvariable=self.status_message, style="Status.TLabel").pack(side="left")
+
+        self.theme_button = ttk.Button(
+            status_bar,
+            text="暗色",
+            style="Secondary.TButton",
+            width=6,
+            command=self.toggle_theme,
+        )
+        self.theme_button.pack(side="right")
+        self._update_theme_button_label()
+
+        ttk.Label(status_bar, textvariable=self.status_message, style="Status.TLabel").pack(
+            side="left", pady=(SPACE_XS, 0)
+        )
 
     def _bind_shortcuts(self) -> None:
         self.root.bind("<F5>", lambda event: self.request_refresh())

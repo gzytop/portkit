@@ -541,5 +541,77 @@ class GraphicalInterfaceTests(unittest.TestCase):
         self.assertIsNone(self.application.scheduled_auto_refresh_id)
 
 
+@unittest.skipUnless(graphical_display_is_available(), "当前环境没有可用的图形显示")
+class LayoutFitTests(unittest.TestCase):
+    """回归测试：控件不能因为空间不足而被挤掉文字。
+
+    起因是一个真实缺陷：筛选栏里塞了搜索、协议、三个复选框、自动刷新和主题按钮，
+    在 DPI 感知开启（打包成 exe 后的实际情况）时中文字体渲染变宽，
+    所需宽度超过窗口，`pack` 便压缩了最后放入的元素，
+    「自动刷新」四个字直接消失，只剩一个孤立的勾选框。
+
+    这类问题在开发机上不一定复现（取决于 DPI 缩放与字体），
+    所以这里显式检查每个控件拿到的宽度不小于它请求的宽度。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        import portkit_gui
+
+        cls.portkit_gui = portkit_gui
+
+    def _find_squeezed_widgets(self, container) -> list[str]:
+        """递归找出实际宽度小于请求宽度的控件。"""
+        squeezed: list[str] = []
+        for child in container.winfo_children():
+            requested = child.winfo_reqwidth()
+            actual = child.winfo_width()
+            # 容差 1px 吸收取整误差；宽度为 1 说明还没被布局，跳过。
+            if actual > 1 and requested - actual > 1:
+                label = ""
+                try:
+                    label = str(child.cget("text"))
+                except Exception:
+                    pass
+                squeezed.append(
+                    f"{child.winfo_class()}(req={requested}, actual={actual}, text={label!r})"
+                )
+            squeezed.extend(self._find_squeezed_widgets(child))
+        return squeezed
+
+    def _assert_layout_fits_at_width(self, width: int, height: int = 620) -> None:
+        import tkinter as tk
+
+        # 与打包后的 exe 保持一致：先开 DPI 感知，中文字体才会按真实尺寸渲染。
+        self.portkit_gui.enable_high_dpi_awareness()
+
+        root = tk.Tk()
+        application = self.portkit_gui.PortManagerApplication(root)
+        try:
+            root.geometry(f"{width}x{height}")
+            # 多轮 update 让 pack 完成尺寸协商。
+            deadline = time.monotonic() + 8
+            while time.monotonic() < deadline:
+                root.update()
+                time.sleep(0.03)
+
+            squeezed = self._find_squeezed_widgets(root)
+            self.assertEqual(
+                squeezed,
+                [],
+                f"窗口宽 {width}px 时下列控件被挤压，文字会显示不全：\n  "
+                + "\n  ".join(squeezed),
+            )
+        finally:
+            application.handle_window_close()
+
+    def test_layout_fits_at_minimum_window_width(self):
+        """最小窗口尺寸是用户能拖到的极限，这里必须不挤。"""
+        self._assert_layout_fits_at_width(940)
+
+    def test_layout_fits_at_default_window_width(self):
+        self._assert_layout_fits_at_width(1080)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
