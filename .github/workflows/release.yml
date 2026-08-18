@@ -100,11 +100,14 @@ jobs:
           retention-days: 30
 
       - name: 生成 Release 说明
+        # 「本次更新」一节取自 CHANGELOG.md 里与 tag 同名的小节。
+        # 该小节不存在时这一步会失败，从而阻止发出一份看不出改了什么的说明。
         if: startsWith(github.ref, 'refs/tags/')
         run: >
           python .github/scripts/render_release_notes.py
           --sha256 "${{ steps.checksum.outputs.sha256 }}"
           --repository "${{ github.repository }}"
+          --tag "${{ github.ref_name }}"
           --output release_notes.md
 
       - name: 创建 Release

@@ -1,5 +1,11 @@
 专治 `Address already in use` / `端口已被占用`：查清是谁占着端口，一键释放。
 
+## 本次更新（{{VERSION}}）
+
+{{CHANGES}}
+
+历史版本的变化见 [CHANGELOG](https://github.com/{{REPOSITORY}}/blob/{{VERSION}}/CHANGELOG.md)。
+
 ## 下载即用
 
 下方 **PortKit.exe** 下载后双击即可运行，**不需要安装 Python**。
