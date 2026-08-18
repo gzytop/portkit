@@ -48,15 +48,27 @@ Windows 走 `netstat`/`tasklist`/`taskkill`，POSIX 走 `lsof`/`ss` + 信号。
 
 CI 故意不在 Ubuntu 上装 `lsof`，为的是让「退回 `ss`」这条备选路径真的被执行到。
 
-### 5. 设计约定
+### 5. 发行说明必须逐版本不同
+
+`CHANGELOG.md` 是 Release 说明的唯一来源。发版流程：
+
+1. 把 `## 未发布` 改名为 `## vX.Y.Z — YYYY-MM-DD` 并写清本版改了什么（写「为什么」，不罗列文件名）
+2. 提交后再打 tag
+
+CI 找不到与 tag 同名的小节会**直接让发版失败**，这是刻意设计的。
+背景：v1.0.0～v1.2.1 的说明曾是一份静态模板，除 SHA256 外逐字节相同，用户看不出升级带来了什么。
+所以宁可发版中断，也不要静默退回通用文案。
+
+### 6. 设计约定
 
 详见 `.impeccable.md`。三条最关键：
 
 - **颜色只编码状态，不做装饰** —— 每种着色对应一个用户需要区分的语义
-- **破坏性操作要有视觉分量** —— 终止（实心红）> 刷新（实心蓝）> 详情/复制（描边）
+- **破坏性操作要有视觉分量** —— 终止（实心红）> 刷新（实心蓝）；针对单行的操作走右键菜单，不占操作栏
 - **对比度必须达 WCAG AA** —— 已落成测试，两套主题上界面真实出现的每个前景/背景组合都会被断言
 
-改配色后跑 `python theme.py` 看数值。
+改配色后跑 `python theme.py` 看数值。改完 UI 用 `python tools/capture_screens.py <目录>` 截图肉眼确认——
+tkinter 的中文字体宽度与控件边框跟预期差别很大，只看代码判断不了。
 
 ## 已经踩过的坑（别重复）
 
@@ -69,6 +81,8 @@ CI 故意不在 Ubuntu 上装 `lsof`，为的是让「退回 `ss`」这条备选
 | 无控制台闪黑窗 | GUI 里调 `netstat` 每次闪一个黑框，开自动刷新时疯狂闪 | `subprocess` 一律传 `creationflags=SUBPROCESS_NO_WINDOW_FLAGS` |
 | 中文 exe 文件名 | cmd 用 GBK 解析 UTF-8 的 `.bat`，`if exist "dist\中文.exe"` 永远判假 | exe 名用 ASCII `PortKit.exe`，中文名走 `version_info.txt` |
 | clam 主题 Combobox | 暗色下 `readonly` 状态退回默认配色，文字与底色撞成一片像空白框 | `style.map` 里显式映射 `readonly` 的前景/背景 |
+| 暗色复选框看不出勾选 | 方框底色用了亮灰，而勾选标记跟随文字色（近白），对比度仅 2:1，三个开关看起来一样 | 专门的 `control_field` 令牌，且该组合已进 `critical_contrast_pairs` 断言 |
+| 对比度断言用绝对亮度差 | 暗色区间相对亮度绝对值本身很小，同样感知差异算出的数值小一个量级，会误判 | 层级类断言统一用 `contrast_ratio` 比值，不用亮度差 |
 | DPI 感知下布局挤压 | 打包成 exe 后中文字体变宽，`pack` 压缩最后放入的元素，文字消失 | 控件按语义分栏，别往一栏里堆；`LayoutFitTests` 自动断言 |
 | tkinter 回调在窗口销毁后触发 | 关窗后 `after` 回调访问已销毁控件抛 `TclError` | `handle_window_close()` 幂等地取消所有排程 |
 | 内联脚本进 YAML | 无法本地验证，且享受不到源码里的统一编码处理 | 抽成 `.github/scripts/*.py` |
@@ -76,7 +90,7 @@ CI 故意不在 Ubuntu 上装 `lsof`，为的是让「退回 `ss`」这条备选
 ## 常用命令
 
 ```bash
-# 测试（53 项，约 40 秒）
+# 测试（59 项，约 50 秒）
 python tests/smoke_test.py
 
 # 看配色对比度数值
@@ -85,7 +99,10 @@ python theme.py
 # 打包 exe（自动建 venv、装 PyInstaller、生成图标）
 build_exe.bat            # 产物 dist\PortKit.exe
 
-# 发版：打 tag 即触发 CI 构建并创建 Release
+# 本地预览某版的 Release 说明（渲染失败说明 CHANGELOG 缺小节）
+python .github/scripts/render_release_notes.py --sha256 test --repository gzytop/portkit --tag v1.2.1 --output preview.md
+
+# 发版：先在 CHANGELOG.md 里把「未发布」改成版本号，再打 tag
 git tag v1.2.2 && git push origin v1.2.2
 ```
 

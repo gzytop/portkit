@@ -116,11 +116,24 @@ class Palette:
     surface: str           # 表格等内容区底色
     surface_raised: str    # 工具条 / 状态条，与窗口略作区分
     row_stripe: str        # 表格斑马纹
+    row_hover: str         # 鼠标悬停的那一行
+    table_header: str      # 表头底色，需要比数据区更有分量
     border: str            # 分隔线与描边
 
     text_primary: str      # 主要文字
     text_secondary: str    # 次要说明文字
     text_disabled: str     # 禁用态
+
+    # 禁用按钮单独给一组颜色，而不是拿 border 凑。
+    # 语义不同的令牌混用会导致「改分隔线顺手改坏了按钮」这类连带故障。
+    control_disabled: str
+    control_disabled_text: str
+    # 复选框方框内部的底色。必须同时满足两件事：
+    #   * 与窗口底色有足够亮度差，让人看出「这里有个可点的方框」
+    #   * 与 text_primary 有足够对比度，让勾选标记清晰可见
+    # 暗色主题曾用 text_secondary，导致白色对勾画在亮灰底上只有 2:1，
+    # 三个复选框看起来一模一样，完全分不出哪个勾了。
+    control_field: str
 
     accent: str            # 主色：主操作、焦点、开发端口强调
     accent_hover: str
@@ -153,17 +166,28 @@ def _build_palette(name: str, is_dark: bool) -> Palette:
             window=neutral(0.968),
             surface=oklch_to_hex(0.995, 0.002, BRAND_HUE),
             surface_raised=neutral(0.985),
-            row_stripe=neutral(0.972),
-            border=neutral(0.886),
+            # 斑马纹与表面的亮度差原先只有 0.023，扫读时几乎分不出行边界。
+            row_stripe=neutral(0.962),
+            # 悬停行要比斑马纹明确、又不能盖过「开发端口」那层强调，
+            # 所以取略深的亮度配一点品牌彩度。
+            row_hover=oklch_to_hex(0.930, 0.018, BRAND_HUE),
+            # 表头要自成一层，不能只比数据区深一点点。
+            table_header=neutral(0.902),
+            # 描边加深：卡片与表格的边界原先几乎融进底色，看着像虚框。
+            border=neutral(0.836),
             text_primary=neutral(0.268),
             text_secondary=neutral(0.520),
             text_disabled=neutral(0.680),
+            control_disabled=neutral(0.916),
+            control_disabled_text=neutral(0.632),
+            control_field=oklch_to_hex(0.995, 0.002, BRAND_HUE),
             accent=oklch_to_hex(0.520, 0.170, BRAND_HUE),
             accent_hover=oklch_to_hex(0.455, 0.175, BRAND_HUE),
             accent_text="#ffffff",
             # 开发端口行的底色。刻意压到很淡：它的职责是「让这几行能被扫到」，
             # 不是喊出来，正文仍要保持最高可读性。
-            accent_soft=oklch_to_hex(0.958, 0.028, BRAND_HUE),
+            # 彩度略高于斑马纹，否则两者亮度接近后会互相混淆。
+            accent_soft=oklch_to_hex(0.952, 0.045, BRAND_HUE),
             danger=oklch_to_hex(0.535, 0.198, DANGER_HUE),
             danger_hover=oklch_to_hex(0.468, 0.196, DANGER_HUE),
             danger_text="#ffffff",
@@ -179,11 +203,19 @@ def _build_palette(name: str, is_dark: bool) -> Palette:
         window=neutral(0.198),
         surface=neutral(0.244),
         surface_raised=neutral(0.222),
-        row_stripe=neutral(0.272),
-        border=neutral(0.364),
+        # 暗色下斑马纹也要拉开，否则整张表是一片均匀的深灰。
+        row_stripe=neutral(0.288),
+        row_hover=oklch_to_hex(0.336, 0.036, BRAND_HUE),
+        # 暗色里「更高层级」靠压暗实现：表头比数据区更深，自成一层。
+        table_header=neutral(0.170),
+        border=neutral(0.404),
         text_primary=neutral(0.936),
         text_secondary=neutral(0.722),
         text_disabled=neutral(0.520),
+        control_disabled=neutral(0.286),
+        control_disabled_text=neutral(0.548),
+        # 比 window 亮出足够多以显出方框轮廓，同时保证白色对勾清晰可辨。
+        control_field=neutral(0.404),
         # 暗背景上必须显著提亮主色，否则深蓝会糊成一团。
         accent=oklch_to_hex(0.720, 0.145, BRAND_HUE),
         accent_hover=oklch_to_hex(0.790, 0.135, BRAND_HUE),
@@ -237,12 +269,18 @@ def critical_contrast_pairs(palette: Palette) -> tuple[tuple[str, str, str], ...
     return (
         ("正文/表面", palette.text_primary, palette.surface),
         ("正文/斑马纹", palette.text_primary, palette.row_stripe),
+        ("正文/悬停行", palette.text_primary, palette.row_hover),
         ("正文/窗口", palette.text_primary, palette.window),
         # 开发端口行与系统进程行都是「带底色的整行」，正文落在这些底色上，
         # 是表格里最容易被忽略、也最容易不达标的位置。
         ("正文/开发端口底", palette.text_primary, palette.accent_soft),
+        ("表头文字/表头底", palette.text_primary, palette.table_header),
         ("次要文字/窗口", palette.text_secondary, palette.window),
         ("次要文字/表面", palette.text_secondary, palette.surface),
+        ("次要文字/工具条", palette.text_secondary, palette.surface_raised),
+        # 复选框的勾选标记落在方框底色上。这一组曾经不在校验范围内，
+        # 于是暗色主题下白对勾配亮灰底只有 2:1，勾没勾完全看不出来。
+        ("勾选标记/方框底", palette.text_primary, palette.control_field),
         ("主色文字/主色块", palette.accent_text, palette.accent),
         ("危险文字/危险块", palette.danger_text, palette.danger),
         ("开发端口色/表面", palette.accent, palette.surface),

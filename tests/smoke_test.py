@@ -385,6 +385,48 @@ class DesignTokenTests(unittest.TestCase):
         self.assertFalse(theme.LIGHT_PALETTE.is_dark)
         self.assertTrue(theme.DARK_PALETTE.is_dark)
 
+    def test_checkbox_mark_is_legible_in_both_themes(self):
+        """回归测试：暗色下曾经看不出复选框有没有勾。
+
+        原因是方框底色用了 text_secondary（亮灰），而勾选标记的颜色跟随
+        foreground（近白），两者只有 2:1 —— 三个复选框看起来完全一样，
+        用户无法判断「隐藏系统进程」到底开着没有。
+        """
+        for palette in (theme.LIGHT_PALETTE, theme.DARK_PALETTE):
+            with self.subTest(theme=palette.name):
+                mark_contrast = theme.contrast_ratio(palette.text_primary, palette.control_field)
+                self.assertGreaterEqual(
+                    mark_contrast,
+                    4.5,
+                    f"[{palette.name}] 勾选标记与方框底只有 {mark_contrast:.2f}:1，勾没勾看不出来",
+                )
+
+    def test_table_header_stands_apart_from_data_rows(self):
+        """表头要自成一层，否则整张表看起来只是一堆同色的行。
+
+        用对比度比值而不是亮度差来断言：暗色区间的相对亮度绝对值本身很小，
+        同样的感知差异算出来的亮度差会比亮色小一个量级，用绝对差会误判。
+        """
+        for palette in (theme.LIGHT_PALETTE, theme.DARK_PALETTE):
+            with self.subTest(theme=palette.name):
+                header_ratio = theme.contrast_ratio(palette.table_header, palette.surface)
+                self.assertGreater(
+                    header_ratio,
+                    1.15,
+                    f"[{palette.name}] 表头与数据区只有 {header_ratio:.3f}:1，分不出层级",
+                )
+
+    def test_row_stripe_is_distinguishable_from_surface(self):
+        """斑马纹的唯一职责是让人看清行边界，太淡就等于没有。"""
+        for palette in (theme.LIGHT_PALETTE, theme.DARK_PALETTE):
+            with self.subTest(theme=palette.name):
+                stripe_contrast = theme.contrast_ratio(palette.row_stripe, palette.surface)
+                self.assertGreater(
+                    stripe_contrast,
+                    1.05,
+                    f"[{palette.name}] 斑马纹与表面几乎同色（{stripe_contrast:.3f}:1），起不到分隔作用",
+                )
+
     def test_dark_theme_is_darker_than_light(self):
         light_luminance = theme.relative_luminance(theme.LIGHT_PALETTE.window)
         dark_luminance = theme.relative_luminance(theme.DARK_PALETTE.window)
@@ -611,6 +653,76 @@ class LayoutFitTests(unittest.TestCase):
 
     def test_layout_fits_at_default_window_width(self):
         self._assert_layout_fits_at_width(1080)
+
+
+class ReleaseNotesTests(unittest.TestCase):
+    """Release 说明必须逐版本不同。
+
+    此前模板完全静态，v1.0.0 到 v1.2.1 的说明除 SHA256 外一模一样，
+    用户无法从 Release 页面看出改了什么。这里守住修复后的行为。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        # 脚本位于 .github/scripts 下，包名不合法，只能按路径加载。
+        import importlib.util
+
+        script_path = PROJECT_ROOT / ".github" / "scripts" / "render_release_notes.py"
+        spec = importlib.util.spec_from_file_location("render_release_notes", script_path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        cls.renderer = module
+
+    def test_extracts_only_the_requested_version_section(self):
+        changelog_text = (
+            "# 更新日志\n\n"
+            "## 未发布\n\n（占位）\n\n"
+            "## v2.0.0 — 2026-09-01\n\n- 新版本的条目\n\n"
+            "## v1.9.0 — 2026-08-01\n\n- 旧版本的条目\n"
+        )
+        section = self.renderer.extract_changelog_section(changelog_text, "v1.9.0")
+        self.assertIn("旧版本的条目", section)
+        self.assertNotIn("新版本的条目", section)
+        self.assertNotIn("占位", section)
+        # 标题行本身不应混进正文，否则 Release 里会出现重复的版本号标题。
+        self.assertNotIn("## v1.9.0", section)
+
+    def test_missing_version_section_aborts_the_release(self):
+        """漏写小节要让发版失败，而不是退回通用文案。"""
+        changelog_text = "# 更新日志\n\n## v1.0.0 — 2026-08-16\n\n- 首个版本\n"
+        with self.assertRaises(SystemExit):
+            self.renderer.extract_changelog_section(changelog_text, "v9.9.9")
+
+    def test_empty_version_section_aborts_the_release(self):
+        changelog_text = "# 更新日志\n\n## v1.0.0 — 2026-08-16\n\n## v0.9.0 — 2026-08-01\n\n- 旧的\n"
+        with self.assertRaises(SystemExit):
+            self.renderer.extract_changelog_section(changelog_text, "v1.0.0")
+
+    def test_accepts_full_ref_and_bare_tag(self):
+        self.assertEqual(self.renderer.normalize_version_tag("refs/tags/v1.2.3"), "v1.2.3")
+        self.assertEqual(self.renderer.normalize_version_tag("  v1.2.3\n"), "v1.2.3")
+
+    def test_every_released_tag_has_a_changelog_section(self):
+        """已发布的版本都得能渲染出说明，避免 CHANGELOG 与 tag 脱节。"""
+        changelog_text = (PROJECT_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+        for version_tag in ("v1.0.0", "v1.1.0", "v1.2.0", "v1.2.1"):
+            with self.subTest(version=version_tag):
+                section = self.renderer.extract_changelog_section(changelog_text, version_tag)
+                self.assertTrue(section.strip(), f"{version_tag} 的小节为空")
+
+    def test_rendered_notes_differ_between_versions(self):
+        rendered_previous = self.renderer.render_release_notes(
+            sha256="A" * 64, repository="gzytop/portkit", version_tag="v1.2.0"
+        )
+        rendered_current = self.renderer.render_release_notes(
+            sha256="A" * 64, repository="gzytop/portkit", version_tag="v1.2.1"
+        )
+        self.assertNotEqual(
+            rendered_previous,
+            rendered_current,
+            "两个版本的 Release 说明内容相同，说明「本次更新」没有真的注入",
+        )
+        self.assertNotIn("{{", rendered_current, "仍有未替换的占位符")
 
 
 if __name__ == "__main__":
