@@ -1,5 +1,7 @@
 # portkit — 端口占用检查与释放工具
 
+666
+
 > 专治 `Address already in use` / `端口已被占用`：一眼看清是谁占着端口，一键把它释放掉。
 
 ![界面截图](docs/screenshot.png)
